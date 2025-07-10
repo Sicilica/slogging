@@ -48,43 +48,41 @@ func (ph *prettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
 }
 
 func (ph *prettyHandler) Handle(ctx context.Context, r slog.Record) error {
-	go func() {
-		ph.mut.Lock()
-		defer ph.mut.Unlock()
+	ph.mut.Lock()
+	defer ph.mut.Unlock()
 
-		levelColor, ok := levelToColor[r.Level]
-		if !ok {
-			levelColor = "\033[0m"
-		}
-		fmt.Fprintf(ph.w, "%s%s [%s] %s\033[0m", levelColor, r.Time.Format("15:04:05"), r.Level.String(), r.Message)
+	levelColor, ok := levelToColor[r.Level]
+	if !ok {
+		levelColor = "\033[0m"
+	}
+	fmt.Fprintf(ph.w, "%s%s [%s] %s\033[0m", levelColor, r.Time.Format("15:04:05"), r.Level.String(), r.Message)
 
-		if ph.opts.AddSource {
-			frames := runtime.CallersFrames([]uintptr{r.PC})
-			for {
-				frame, more := frames.Next()
-				fmt.Fprintf(ph.w, " \033[30mat %s:%d\033[0m\n", frame.File, frame.Line)
-				if !more {
-					break
-				}
-			}
-		} else {
-			fmt.Fprint(ph.w, "\n")
-		}
-
-		explicitKeys := make(map[string]struct{}, r.NumAttrs())
-		r.Attrs(func(a slog.Attr) bool {
-			fullKey := fmt.Sprintf("%s%s", ph.groupPrefix, a.Key)
-			explicitKeys[fullKey] = struct{}{}
-			fmt.Fprint(ph.w, prettyLogAttr(fullKey, a.Value))
-			return true
-		})
-
-		for k, v := range ph.fixedAttrs {
-			if _, ok := explicitKeys[k]; !ok {
-				fmt.Fprint(ph.w, v)
+	if ph.opts.AddSource {
+		frames := runtime.CallersFrames([]uintptr{r.PC})
+		for {
+			frame, more := frames.Next()
+			fmt.Fprintf(ph.w, " \033[30mat %s:%d\033[0m\n", frame.File, frame.Line)
+			if !more {
+				break
 			}
 		}
-	}()
+	} else {
+		fmt.Fprint(ph.w, "\n")
+	}
+
+	explicitKeys := make(map[string]struct{}, r.NumAttrs())
+	r.Attrs(func(a slog.Attr) bool {
+		fullKey := fmt.Sprintf("%s%s", ph.groupPrefix, a.Key)
+		explicitKeys[fullKey] = struct{}{}
+		fmt.Fprint(ph.w, prettyLogAttr(fullKey, a.Value))
+		return true
+	})
+
+	for k, v := range ph.fixedAttrs {
+		if _, ok := explicitKeys[k]; !ok {
+			fmt.Fprint(ph.w, v)
+		}
+	}
 
 	return nil
 }
