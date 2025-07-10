@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"runtime"
+	"sync"
 )
 
 var levelToColor = map[slog.Level]string{
@@ -16,6 +17,8 @@ var levelToColor = map[slog.Level]string{
 }
 
 type prettyHandler struct {
+	mut *sync.Mutex
+
 	fixedAttrs  map[string]string
 	groupPrefix string
 	opts        slog.HandlerOptions
@@ -34,6 +37,7 @@ func NewPrettyHandler(w io.Writer, opts *slog.HandlerOptions) slog.Handler {
 		o.Level = slog.LevelInfo
 	}
 	return &prettyHandler{
+		mut:  &sync.Mutex{},
 		opts: o,
 		w:    w,
 	}
@@ -44,38 +48,43 @@ func (ph *prettyHandler) Enabled(ctx context.Context, l slog.Level) bool {
 }
 
 func (ph *prettyHandler) Handle(ctx context.Context, r slog.Record) error {
-	levelColor, ok := levelToColor[r.Level]
-	if !ok {
-		levelColor = "\033[0m"
-	}
-	fmt.Fprintf(ph.w, "%s%s [%s] %s\033[0m", levelColor, r.Time.Format("15:04:05"), r.Level.String(), r.Message)
+	go func() {
+		ph.mut.Lock()
+		defer ph.mut.Unlock()
 
-	if ph.opts.AddSource {
-		frames := runtime.CallersFrames([]uintptr{r.PC})
-		for {
-			frame, more := frames.Next()
-			fmt.Fprintf(ph.w, " \033[30mat %s:%d\033[0m\n", frame.File, frame.Line)
-			if !more {
-				break
+		levelColor, ok := levelToColor[r.Level]
+		if !ok {
+			levelColor = "\033[0m"
+		}
+		fmt.Fprintf(ph.w, "%s%s [%s] %s\033[0m", levelColor, r.Time.Format("15:04:05"), r.Level.String(), r.Message)
+
+		if ph.opts.AddSource {
+			frames := runtime.CallersFrames([]uintptr{r.PC})
+			for {
+				frame, more := frames.Next()
+				fmt.Fprintf(ph.w, " \033[30mat %s:%d\033[0m\n", frame.File, frame.Line)
+				if !more {
+					break
+				}
+			}
+		} else {
+			fmt.Fprint(ph.w, "\n")
+		}
+
+		explicitKeys := make(map[string]struct{}, r.NumAttrs())
+		r.Attrs(func(a slog.Attr) bool {
+			fullKey := fmt.Sprintf("%s%s", ph.groupPrefix, a.Key)
+			explicitKeys[fullKey] = struct{}{}
+			fmt.Fprint(ph.w, prettyLogAttr(fullKey, a.Value))
+			return true
+		})
+
+		for k, v := range ph.fixedAttrs {
+			if _, ok := explicitKeys[k]; !ok {
+				fmt.Fprint(ph.w, v)
 			}
 		}
-	} else {
-		fmt.Fprint(ph.w, "\n")
-	}
-
-	explicitKeys := make(map[string]struct{}, r.NumAttrs())
-	r.Attrs(func(a slog.Attr) bool {
-		fullKey := fmt.Sprintf("%s%s", ph.groupPrefix, a.Key)
-		explicitKeys[fullKey] = struct{}{}
-		fmt.Fprint(ph.w, prettyLogAttr(fullKey, a.Value))
-		return true
-	})
-
-	for k, v := range ph.fixedAttrs {
-		if _, ok := explicitKeys[k]; !ok {
-			fmt.Fprint(ph.w, v)
-		}
-	}
+	}()
 
 	return nil
 }
@@ -90,6 +99,7 @@ func (ph *prettyHandler) WithAttrs(a []slog.Attr) slog.Handler {
 		newAttrs[fullKey] = prettyLogAttr(fullKey, a.Value)
 	}
 	return &prettyHandler{
+		mut:         ph.mut,
 		fixedAttrs:  newAttrs,
 		groupPrefix: ph.groupPrefix,
 		opts:        ph.opts,
@@ -99,6 +109,7 @@ func (ph *prettyHandler) WithAttrs(a []slog.Attr) slog.Handler {
 
 func (ph *prettyHandler) WithGroup(g string) slog.Handler {
 	return &prettyHandler{
+		mut:         ph.mut,
 		fixedAttrs:  ph.fixedAttrs,
 		groupPrefix: fmt.Sprintf("%s%s.", ph.groupPrefix, g),
 		opts:        ph.opts,
